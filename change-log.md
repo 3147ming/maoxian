@@ -84,6 +84,17 @@
 - 输入映射：
   - `CONFIG.input` 统一管理移动、轻击、重击、闪避、冲刺、识破、棍势、锁定、变身、三神通。
   - 通过包装 `input.wasPressed / wasAnyPressed / isDown` 与 `moveX / moveY`，让原引擎的固定键位查询也能响应自定义键位。
+- Y 轴反转：
+  - `CONFIG.input.invertY = true`，在鼠标俯仰后补偿反向位移，实现上下视角反转。
+  - 调试 API：`window.__bm.setInvertY(true | false)`。
+- 跳跃：
+  - `Space` 跳跃，消耗体力，带垂直位移与落地回归，不改变平面碰撞。
+  - 跳跃参数集中在 `CONFIG.player.jump`：体力、初速度、重力。
+- 按键自定义：
+  - 暂停面板新增「键位设置」，可改轻击、重击、闪避、冲刺、跳跃、识破、棍势、锁定、变身、三神通、四向移动。
+  - 绑定自动写入 `localStorage['inkblade_keybinds']`，刷新后保留；支持恢复默认。
+  - 改键时自动清除其他动作上的冲突键。
+  - 默认键位：左键/`J` 轻击、右键重击、`K` 闪避、`Shift` 冲刺、`Space` 跳跃。
 
 ## 四、新增调试 API
 
@@ -109,7 +120,28 @@
 - `.gitignore` 增加 `node_modules/`、`dist/`、`.vite/`。
 - `README-DEPLOY.md` 更新为 Vite 本地开发、`npm run build`、Cloudflare Pages `dist` 部署流程。
 
-## 六、验证结果
+## 七、参考素材融合（纹理 / 音效 / 渲染）
+
+参考文件 `几猫国产3A大作_V1.html` 的可复用点：
+
+- 纹理不是位图，而是通过 `onBeforeCompile` 注入程序化表面细节：金属划痕、木纹、石材颗粒、雨天湿润与水滴。
+- 渲染使用低角度暖色太阳、程序化天空/雾、细节材质和自定义曝光；不依赖外部贴图。
+- 音频使用 WebAudio 分层合成：世界/近场/环境总线、压缩器、软削波、卷积混响、空间声像、声部优先级。
+
+本次只移植与当前架构兼容、且不破坏原音频图的部分：
+
+- 新增程序化表面细节着色器：按材质金属度/颜色自动分为金属、木质、石材三类，注入对象空间噪声，调制粗糙度与漫反射；覆盖场景 343 个 MeshStandardMaterial。
+- 新增湿润度全局 uniform：顶面降低粗糙度、轻微压暗，模拟雨后石面；默认 `0.22`。
+- 调试 API：`window.__bm.setSurfaceDetail(true|false)`、`window.__bm.setWetness(0~1)`。
+- 打击音效增加材质尾音：石质增加金属余响与带通碎响，肉体增加低频尾音；重击增加延迟低频尾音；轻击 35ms 内重复触发做抑制。
+- 未改动原音频节点图，不新增压缩器/卷积节点，保留原 `master` 路由与外部 wav/ogg 钩子；后续如需要完整总线/混响，可单独授权后再接。
+
+验证：
+
+- `[BM] surface detail materials: 343`，无 `WebGLProgram` / Shader Error / `vObjP` / Uncaught 错误。
+- 表面细节着色器首次编译后正常渲染，未出现材质变黑。
+
+## 八、验证结果
 
 - 轻击命中获得棍势，空挥不获得。
 - 重击消耗棍势、削减 BOSS 架势，架势归零进入破势。
@@ -121,3 +153,54 @@
 - 配置切换 `setDifficulty('hard')`、`setQuality('low')`、`setLowHpFilter(false)`、`lock()` 正常。
 - 控制台无 `[BM]` 运行时错误。
 - Vite 安装与生产构建需在本机终端执行 `npm install && npm run build`；当前运行环境未生成 `node_modules/` 与 `dist/`。
+
+## 九、构建链路 / 性能 / 可维护性迭代
+
+### 9.1 首屏拆分
+
+- 原 6,044,007 B 的自包含 `index.html` 拆为四份：
+  - `public/assets.js`：5.33 MB 内联 base64 美术资源（`window.__INK_ASSETS__`），由 `public/` 原样复制，不参与打包；
+  - `game.js`：原内联游戏主体（module）；
+  - `styles.css`：原内联样式；
+  - `index.html`：仅保留页面骨架与资源引用（约 1 KB）。
+- 首屏 HTML 从 6.04 MB 降到约 1 KB，资源可独立缓存与协商。
+
+### 9.2 静态服务
+
+- `server.mjs` 增加 brotli / gzip 协商压缩（`Accept-Encoding`）、`ETag` + `304` 协商缓存、`Cache-Control: no-cache`、`Vary: accept-encoding`。
+- 新增 `ROOT` 环境变量，可直接以 `dist/` 作为站点根目录做产物冒烟。
+- 目录穿越防护与 404/405 明确响应。
+
+### 9.3 画质档位与自动降档
+
+- `CONFIG.graphics[high|medium|low].detail` 控制材质细节强度，`low` 为 0。
+- 着色器内 `diffuseColor` 与粗糙度均乘以 `uDetail`，低档位下不再为细节付出可见代价。
+- 采样帧率，连续低于 45 FPS 自动降一档；档位写入 `localStorage['inkblade_quality']`。
+- 手动 `__bm.setQuality()` 会锁定档位，不再自动降档；`__bm.showFps()` 或 `?fps=1` 显示帧率与档位。
+
+### 9.4 HUD 开销
+
+- HUD 节点一次性缓存，移除每帧 `querySelector`。
+- 文本与宽度写入降到约 12 Hz；交互投影（屏幕空间提示）保持逐帧。
+- 投影复用同一个 `Vector3`，去掉每帧 `clone()` 分配。
+
+### 9.5 契约、调试面与诊断
+
+- 启动时校验 `window.__game` 必需字段；缺失时补丁层不加载（原版继续可玩），并在 500ms 节奏内有限重试。
+- `window.__bm` 仅在 localhost / `?debug=1` 下暴露完整接口；发布环境只保留只读 `status()` / `errors()`，`?bmtest=1` 同样只在调试条件生效。
+- 全局 `window.__inkDiag`：记录启动耗时与最近 30 条 `error` / `unhandledrejection`。
+
+### 9.6 观感与引导
+
+- 标题页标题与按钮之间补足间距，`700px` 以下按钮改单列；副标题与操作说明改为「第一 / 第三人称可切换」并标注 `O` 键。
+- 曝光 1.04 → 1.16、半球光 ×1.22（`__bm.setBrightness()` 可切回）。
+- 着色器加入两层低频噪声，打散地面/墙面的重复感。
+- 触控层支持 `auto / on / off`（`__bm.setTouch()`），HUD 与触控按钮适配 `env(safe-area-inset-*)`。
+- 首局 4 步渐进提示（移动 → 轻击 → 闪避 → 识破），完成后写入 `localStorage['inkblade_tips_done']`。
+
+### 9.7 验证
+
+- `npm install` + `npm run build` 跑通，产出 `dist/`（含 `dist/assets.js`）。
+- dev（5180）与 dist（5181，`ROOT=dist`）分别用自动浏览器冒烟：标题页 → 踏入江湖 → 3D 场景 + HUD，控制台无 error。
+- 压缩与缓存：`assets.js` 以 br 传输约 3.85 MB；带 `If-None-Match` 复访返回 304。
+- dev 环境实测 47–52 FPS（high），首局提示与 FPS 徽章均按预期出现。

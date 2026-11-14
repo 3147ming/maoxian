@@ -6,12 +6,16 @@
 
 ```text
 INK-BLADE-3D/
-├─ index.html          # 游戏主文件（自包含构建，末尾引入补丁）
+├─ index.html          # 页面骨架（约 1KB，引用外部资源）
+├─ game.js             # 原内联游戏主体，现为外部 module
+├─ styles.css          # 原内联样式，现为外部样式表
+├─ public/
+│  └─ assets.js        # 5.3MB 内联 base64 美术资源（window.__INK_ASSETS__）
 ├─ patch/
 │  ├─ overlay.js       # 运行时战斗/氛围/UI 补丁
 │  └─ theme.css        # HUD、菜单、触控样式
 ├─ vite.config.js      # Vite 配置（端口 5173，输出 dist）
-├─ server.mjs          # 备用零依赖静态服务器
+├─ server.mjs          # 备用零依赖静态服务器（br/gzip + ETag）
 ├─ package.json        # dev / build / preview / serve
 ├─ change-log.md       # 变更记录
 ├─ README-DEPLOY.md    # 本文档
@@ -30,14 +34,39 @@ npm run dev
 
 访问：`http://localhost:5173/`
 
+默认操作：
+
+| 输入 | 行为 |
+|---|---|
+| 左键 / `J` | 轻击，命中积攒棍势 |
+| 右键 | 当前棍势重招 |
+| `Space` | 跳跃 |
+| `Shift`（按住） | 冲刺 |
+| `K` | 闪避 |
+| `C` | 识破 |
+| `V` | 切换棍势 |
+| `F` | 精魂变身 |
+| `L` | 锁定 |
+| `1 / 2 / 3` | 定身 / 移形闪 / 护身法 |
+| `Esc` | 暂停 → 键位设置 |
+
+自定义键位会保存到 `localStorage['inkblade_keybinds']`，刷新后保留；暂停面板中的「键位设置」可修改并恢复默认。
+
 说明：
 
 - 补丁入口为 `patch/overlay.js`，样式为 `patch/theme.css`，由 `index.html` 末尾直接引入，Vite 会正常处理。
 - `overlay.js` 使用 `window.__BM_INSTALLED` 单例保护。HMR 重复注入时直接返回，不会重复绑定事件、重复创建 HUD。
 - 页面卸载时通过 `window.__BM_DISPOSE()` 清理 pending、sequences、变身网格与光柱资源。
-- 调试入口：`http://localhost:5173/?bmtest=1`
+- 调试入口：`http://localhost:5173/?bmtest=1`（仅 localhost 或 `?debug=1` 生效）
 - 触控调试：`http://localhost:5173/?touch=1`
-- 调试 API：`window.__bm`；全局配置：`window.__BM_CONFIG`。
+- 帧率显示：`http://localhost:5173/?fps=1`，或控制台 `__bm.showFps()`
+- 调试 API：`window.__bm`（发布环境自动降级为只读 `status()/errors()`）；全局配置：`window.__BM_CONFIG`
+- 运行期诊断：`window.__inkDiag`（启动耗时 `boot`、环形错误缓冲 `errors`）
+
+### 画质与性能
+
+- 画质档位 `high / medium / low` 影响光柱数量、余烬密度、材质细节强度（`low` 时完全关闭材质噪声）。
+- 连续低于 45 FPS 会自动降一档，选择会写入 `localStorage['inkblade_quality']`；手动 `__bm.setQuality('high')` 会锁定不再自动降档。
 
 ### 备用静态服务
 
@@ -48,7 +77,13 @@ npm run serve
 # 或 node server.mjs
 ```
 
-默认也是 `http://localhost:5173/`。
+默认也是 `http://localhost:5173/`。可通过环境变量覆盖：
+
+```bash
+PORT=5180 ROOT=dist node server.mjs   # 指定端口与站点根目录
+```
+
+`server.mjs` 已内置 brotli / gzip 压缩、`ETag` + `304` 协商缓存与 `Cache-Control: no-cache`，修改文件后刷新即可生效。
 
 ## 三、生产构建
 
@@ -68,8 +103,8 @@ npm run preview
 
 - `vite.config.js` 中 `base: './'`，产物使用相对路径，可部署在任意子路径。
 - `dist/` 已加入 `.gitignore`，不需要提交到仓库。
-- 生产构建不依赖 Vite 运行时 API，`window.__game`、`window.__bm`、`?bmtest` 均保留。
-- 由于 `index.html` 内联了约 6MB 的游戏主体，首次构建会比普通项目慢，属于正常现象。
+- `public/assets.js` 会原样复制到 `dist/assets.js`（体积过大，不参与打包），`game.js` / `styles.css` / `patch/*` 会正常打包进 `dist/assets/`。
+- `window.__game`、`window.__bm`、`?bmtest` 在生产构建中均保留；`__bm` 仅在 localhost 或 `?debug=1` 下暴露完整接口。
 
 ## 四、GitHub 仓库初始化
 
@@ -133,11 +168,11 @@ https://<project-name>.pages.dev
 
 ## 六、回滚到原版
 
-删除 `index.html` 末尾以下两行：
+本迭代把原先 6MB 的自包含 `index.html` 拆成了外部资源。需要回到拆分前的单文件版本时：
 
-```html
-<link rel="stylesheet" href="./patch/theme.css">
-<script type="module" src="./patch/overlay.js"></script>
+```bash
+git checkout -- index.html
+rm game.js styles.css public/assets.js
 ```
 
-再删除 `patch/` 目录即可恢复原版游戏；原 6MB 构建主体未被改写。
+补丁层 `patch/` 与原版同样兼容，可继续使用。
